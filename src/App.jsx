@@ -353,7 +353,7 @@ export default function App() {
       const resp = await fetch("/api/analyze", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          model: "claude-3-5-sonnet-20241022", max_tokens: 4000,
           system: `Sos un experto en lectura de planos de detallamiento para carpintería en Paraguay.
 Analizá el plano y extraé cada mueble con todos sus componentes, materiales y medidas.
 Respondé ÚNICAMENTE con JSON válido. Sin backticks, sin texto adicional.
