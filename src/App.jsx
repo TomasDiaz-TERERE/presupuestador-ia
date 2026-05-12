@@ -56,11 +56,11 @@ const sb = {
     return { apikey: key, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=representation", ...extra };
   },
   async signUp(url, key, email, password) {
-    const r = await fetchWithTimeout(`${url}/auth/v1/signup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    const r = await fetchWithTimeout(`${url}/auth/v1/signup`, { method: "POST", headers: { apikey: key, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
     return r.json();
   },
   async signIn(url, key, email, password) {
-    const r = await fetchWithTimeout(`${url}/auth/v1/token?grant_type=password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    const r = await fetchWithTimeout(`${url}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: key, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
     return r.json();
   },
   async signOut(url, key, token) {
@@ -220,9 +220,14 @@ export default function App() {
           setCfg(c);
           if (r2) {
             const s = JSON.parse(r2.value);
-            setSession(s);
-            await loadUserData(c, s);
-            setScreen("app");
+            if (s && s.access_token && s.user && s.user.id) {
+              setSession(s);
+              await loadUserData(c, s);
+              setScreen("app");
+            } else {
+              localStorage.removeItem("sb_session");
+              setScreen("auth");
+            }
           } else setScreen("auth");
         } else setScreen("config");
       } catch { setScreen("config"); }
