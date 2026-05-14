@@ -18,10 +18,10 @@ module.exports = async function handler(req, res) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 4000,
-        ...req.body,
-      }),
+  max_tokens: 4000,
+  ...req.body,
+  model: 'claude-3-haiku-20240307',
+}),
     });
 
     const data = await response.json();
