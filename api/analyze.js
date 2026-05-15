@@ -20,7 +20,7 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify({
   max_tokens: 4000,
   ...req.body,
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'claude-haiku-4-5-20251001',
 }),
     });
 
