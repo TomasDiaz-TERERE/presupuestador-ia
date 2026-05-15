@@ -104,7 +104,7 @@ const C = {
   text: "#1C1B19", muted: "#7A776F", accent: "#1D4E7A",
   warm: "#F2EDE5", tag: "#E8E3DA", green: "#2A7A4A", red: "#8A2A2A",
 };
-const CAT_COLOR = { Tableros: "#1D4E7A", Mesadas: "#6B3A8A", Accesorios: "#2A7A4A", Herrajes: "#8A5A2A" };
+const CAT_COLOR = { Tableros: "#1D4E7A", Mesadas: "#6B3A8A", Accesorios: "#2A7A4A", Herrajes: "#8A5A2A", Especiales: "#5A3A8A" };
 
 // ─── Motor de cálculo ──────────────────────────────────────────────────────────
 function normMat(r) {
@@ -112,7 +112,9 @@ function normMat(r) {
   if (/hidro.*18|18.*hidro/i.test(r)) return "MDF Hidrofugo 18mm";
   if (/15\s*mm/i.test(r))             return "MDF 15mm";
   if (/18\s*mm/i.test(r))             return "MDF 18mm";
-  if (/9\s*mm/i.test(r))              return "MDF 9mm";
+  if (/6\s*mm/i.test(r))              return "MDF 6mm";
+  if (/3\s*mm/i.test(r))              return "MDF 3mm";
+  if (/9\s*mm/i.test(r))              return "MDF 6mm"; // 9mm → 6mm
   return r.trim();
 }
 function normTop(r) {
@@ -122,7 +124,7 @@ function normTop(r) {
   return r.trim();
 }
 function calcBOM(muebles, catalog) {
-  const panels = {}, tops = {}, hw = {};
+  const panels = {}, tops = {}, hw = {}, especiales = {};
   let edging = 0, has30 = false, id = 0;
   for (const m of muebles) {
     const q = m.cantidad || 1;
@@ -139,8 +141,10 @@ function calcBOM(muebles, catalog) {
       tops[mat] = (tops[mat] || 0) + area;
     }
     for (const h of m.herrajes || []) hw[h.nombre] = (hw[h.nombre] || 0) + (h.cantidad || 1) * q;
+    for (const s of m.especiales || []) especiales[s.nombre] = (especiales[s.nombre] || { unidad: s.unidad || "u", qty: 0 }),
+      especiales[s.nombre].qty += (s.cantidad || 1) * q;
   }
-  const ORDER = ["MDF 15mm", "MDF 18mm", "MDF 9mm", "MDF Hidrofugo 15mm", "MDF Hidrofugo 18mm"];
+  const ORDER = ["MDF 15mm", "MDF 18mm", "MDF 6mm", "MDF 3mm", "MDF Hidrofugo 15mm", "MDF Hidrofugo 18mm"];
   const sorted = [...ORDER.filter(k => panels[k]), ...Object.keys(panels).filter(k => !ORDER.includes(k))];
   const items = [];
   for (const mat of sorted) {
@@ -158,6 +162,8 @@ function calcBOM(muebles, catalog) {
   }
   for (const [h, count] of Object.entries(hw))
     items.push({ id: id++, cat: "Herrajes", desc: h, qty: count, unit: "u", price: 0, detail: "" });
+  for (const [nombre, data] of Object.entries(especiales))
+    items.push({ id: id++, cat: "Especiales", desc: nombre, qty: data.qty, unit: data.unidad, price: 0, detail: "" });
   return { items, has30 };
 }
 
@@ -349,28 +355,75 @@ export default function App() {
     setTab("results"); setView("results");
   }
 
-  async function analyzeFile(file) {
-    setView("analyzing"); setStatus("Leyendo el documento…");
+  async function analyzeFiles(files) {
+    const fileArray = Array.from(files);
+    if (!fileArray.length) return;
+    setView("analyzing");
+    setStatus(fileArray.length > 1 ? `Leyendo ${fileArray.length} imágenes…` : "Leyendo el documento…");
     try {
-      const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
+      // Convert all files to base64
+      const fileData = await Promise.all(fileArray.map(file =>
+        new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res({ base64: r.result.split(",")[1], type: file.type, isPDF: file.type === "application/pdf" });
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        })
+      ));
+
       setStatus("Identificando muebles con IA…");
-      const isPDF = file.type === "application/pdf";
-      const resp = await fetch("/api/analyze", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-3-5-sonnet-20241022", max_tokens: 4000,
-          system: `Sos un experto en lectura de planos de detallamiento para carpintería en Paraguay.
-Analizá el plano y extraé cada mueble con todos sus componentes, materiales y medidas.
+
+      // Build content blocks — one per file
+      const contentBlocks = fileData.map(f =>
+        f.isPDF
+          ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: f.base64 } }
+          : { type: "image",    source: { type: "base64", media_type: f.type,              data: f.base64 } }
+      );
+      contentBlocks.push({ type: "text", text: fileArray.length > 1
+        ? "Estas son múltiples vistas del mismo proyecto/ambiente. Analizalas como un único proyecto y extraé todos los muebles con componentes, materiales y medidas consolidados."
+        : "Analizá este plano y extraé todos los muebles con componentes, materiales y medidas." });
+
+      const SYSTEM = `Sos un experto en fabricación de muebles y lectura de planos de detallamiento para carpintería en Paraguay.
+Analizá el/los plano(s) y extraé TODOS los muebles con sus componentes, materiales y medidas.
 Respondé ÚNICAMENTE con JSON válido. Sin backticks, sin texto adicional.
 
-ESPESORES MDF: 15mm (internos, el más usado), 18mm (envolventes/puertas), 9mm (fondos), 30mm (regrueso = 2×15mm), Hidrofugo 15mm/18mm (baños).
-MESADAS: Granito, Mármol, Ultracompact (Dekton/Silestone/Neolith).
+REGLAS DE MATERIALES:
+- MDF 15mm: componentes INTERNOS (estantes, laterales interiores, pisos de cajones). EL MÁS USADO.
+- MDF 18mm: envolventes, frentes, puertas, laterales exteriores.
+- MDF 6mm: fondos de muebles PREMIUM.
+- MDF 3mm: fondos de muebles ECONÓMICOS. NUNCA usar MDF 9mm.
+- MDF 30mm: regruesos (2 chapas de 15mm pegadas).
+- MDF Hidrofugo 15mm / 18mm: baños y ambientes húmedos.
+- Sin espesor especificado: 15mm internos, 18mm exteriores.
 
-JSON:
-{"proyecto":"descripción","muebles":[{"nombre":"nombre","cantidad":1,"componentes":[{"descripcion":"Lateral","material":"MDF 15mm","ancho_mm":350,"alto_mm":720,"cantidad":2}],"mesada":{"material":"Granito","ancho_mm":900,"profundidad_mm":600,"cantidad":1},"herrajes":[{"nombre":"Bisagra 35mm","cantidad":4}]}]}
-Omití mesada/herrajes si no hay.`,
-          messages: [{ role: "user", content: [isPDF ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } } : { type: "image", source: { type: "base64", media_type: file.type, data: base64 } }, { type: "text", text: "Analizá este plano y extraé todos los muebles con componentes, materiales y medidas." }] }]
-        })
+MESADAS (solo en cocinas y baños con piedra):
+- Detectar: Granito, Mármol, Ultracompact (Dekton/Silestone/Neolith).
+- Calcular en m² (ancho × profundidad).
+- Paneles tapizados, cabeceras de cama, paneles decorativos NO son mesadas.
+
+HERRAJES — REGLAS IMPORTANTES:
+- Bisagras cazoleta: 2 por puerta pequeña, 4 por puerta alta (>1200mm).
+- Corredizas de cajón: SIEMPRE en PARES (1 par = 2 unidades) por cajón. Ej: 3 cajones = 3 pares.
+- Pistones a gas: 2 unidades por puerta basculante/abatible hacia arriba.
+- Riel para puerta corrediza de espejo: solo RIEL SUPERIOR (sistema suspendido, sin guía inferior).
+- Perfilería de aluminio para puertas espejo: calcular en metros lineales.
+- Espejo: calcular en m² (no en chapas).
+- Tiradores/jaladores: 1 por puerta o cajón.
+- Cinta LED / Perfil LED: calcular en metros lineales.
+
+ELEMENTOS ESPECIALES:
+- Ripado de madera: calcular metros lineales de listones + tablero de respaldo.
+- Cantos curvos / fresados: incluir como ítem de "Mecanizado especial" con descripción.
+- Panel tapizado / cabecera: incluir como ítem con m² de tapizado.
+- Sistema suspendido (puerta corrediza): solo riel superior, sin guía inferior.
+
+JSON requerido:
+{"proyecto":"descripción del proyecto","muebles":[{"nombre":"nombre del mueble","cantidad":1,"componentes":[{"descripcion":"Lateral","material":"MDF 15mm","ancho_mm":350,"alto_mm":720,"cantidad":2}],"mesada":{"material":"Granito Negro Absoluto","ancho_mm":900,"profundidad_mm":600,"cantidad":1},"herrajes":[{"nombre":"Bisagra cazoleta 35mm","cantidad":4},{"nombre":"Par de corredizas 500mm","cantidad":2}],"especiales":[{"nombre":"Mecanizado canto curvo","unidad":"u","cantidad":1}]}]}
+Omití "mesada" si no hay. Omití "herrajes" si no hay. Omití "especiales" si no hay.`;
+
+      const resp = await fetch("/api/analyze", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ max_tokens: 4000, system: SYSTEM, messages: [{ role: "user", content: contentBlocks }] })
       });
       setStatus("Calculando materiales…");
       const data = await resp.json();
@@ -380,7 +433,11 @@ Omití mesada/herrajes si no hay.`,
     } catch (e) { console.error(e); setStatus("Error. Intentá con otro archivo."); setTimeout(() => setView("upload"), 3000); }
   }
 
-  const onDrop = useCallback((e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer?.files?.[0] || e.target?.files?.[0]; if (f) analyzeFile(f); }, [catalog]);
+  const onDrop = useCallback((e) => {
+    e.preventDefault(); setDragging(false);
+    const files = e.dataTransfer?.files || e.target?.files;
+    if (files && files.length) analyzeFiles(files);
+  }, [catalog]);
   const resetApp = () => { setView("upload"); setTab("upload"); setProject(null); setItems([]); setHas30(false); };
 
   const updatePrice = (id, v) => setItems(p => p.map(i => i.id === id ? { ...i, price: parseFloat(v) || 0 } : i));
@@ -575,7 +632,7 @@ create policy "own" on budgets for all using (auth.uid() = user_id);`}
             <div style={{ maxWidth: 540, width: "100%", textAlign: "center" }}>
               <h1 style={{ fontSize: 30, fontWeight: 400, margin: "0 0 8px", letterSpacing: "-0.025em" }}>Del plano al presupuesto</h1>
               <p style={{ color: C.muted, fontSize: 14, margin: "0 0 2rem", lineHeight: 1.7 }}>
-                Subí el PDF del detallamiento. La IA extrae muebles, calcula chapas por espesor, m² de mesadas y herrajes — todo en Gs.
+                Subí el PDF o las imágenes del detallamiento. Podés seleccionar múltiples vistas de un mismo ambiente a la vez.
               </p>
               <div onClick={() => fileRef.current.click()} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}
                 style={{ border: `1.5px dashed ${dragging ? C.accent : C.border}`, borderRadius: 14, padding: "3rem 2rem", cursor: "pointer", background: dragging ? "#EEF3FA" : C.surface, transition: "all .2s", marginBottom: "1rem" }}>
@@ -585,10 +642,10 @@ create policy "own" on budgets for all using (auth.uid() = user_id);`}
                   <circle cx="40" cy="40" r="11" fill={C.accent}/>
                   <line x1="40" y1="34" x2="40" y2="46" stroke="white" strokeWidth="2.2"/><line x1="34" y1="40" x2="46" y2="40" stroke="white" strokeWidth="2.2"/>
                 </svg>
-                <p style={{ fontWeight: 500, margin: "0 0 5px", fontSize: 15 }}>Arrastrá el PDF aquí</p>
-                <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>PDF · JPG · PNG</p>
+                <p style={{ fontWeight: 500, margin: "0 0 5px", fontSize: 15 }}>Arrastrá los planos aquí</p>
+                <p style={{ color: C.muted, fontSize: 12, margin: 0 }}>PDF · JPG · PNG · Podés seleccionar varias imágenes a la vez</p>
               </div>
-              <input ref={fileRef} type="file" accept=".pdf,image/*" style={{ display: "none" }} onChange={onDrop}/>
+              <input ref={fileRef} type="file" accept=".pdf,image/*" multiple style={{ display: "none" }} onChange={onDrop}/>
               <button onClick={() => { setView("analyzing"); setStatus("Cargando ejemplo…"); setTimeout(() => applyAnalysis(DEMO), 1400); }}
                 style={{ background: "transparent", border: "none", color: C.accent, fontSize: 13, cursor: "pointer", textDecoration: "underline" }}>
                 Ver demo sin subir archivo
@@ -670,7 +727,7 @@ create policy "own" on budgets for all using (auth.uid() = user_id);`}
                     </tr>
                   </thead>
                   <tbody>
-                    {["Tableros","Mesadas","Accesorios","Herrajes"].flatMap(cat => {
+                    {["Tableros","Mesadas","Accesorios","Herrajes","Especiales"].flatMap(cat => {
                       const rows = items.filter(i => i.cat === cat);
                       if (!rows.length) return [];
                       return [
