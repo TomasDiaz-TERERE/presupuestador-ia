@@ -140,7 +140,18 @@ function calcBOM(muebles, catalog) {
       const mat = normTop(t.material || "Mesada");
       tops[mat] = (tops[mat] || 0) + area;
     }
-    for (const h of m.herrajes || []) hw[h.nombre] = (hw[h.nombre] || 0) + (h.cantidad || 1) * q;
+    for (const h of m.herrajes || []) {
+      const isLED = /led|canaleta|cinta/i.test(h.nombre);
+      if (isLED) {
+        // LED: use cantidad_ml (meters) or cantidad, consolidate into one item
+        const key = "Canaleta LED";
+        hw[key] = (hw[key] || { unit: "m", qty: 0 });
+        hw[key].qty += (h.cantidad_ml || h.cantidad || 0) * q;
+      } else {
+        hw[h.nombre] = typeof hw[h.nombre] === "object" ? hw[h.nombre] : { unit: "u", qty: hw[h.nombre] || 0 };
+        hw[h.nombre].qty += (h.cantidad || 1) * q;
+      }
+    }
     for (const s of m.especiales || []) especiales[s.nombre] = (especiales[s.nombre] || { unidad: s.unidad || "u", qty: 0 }),
       especiales[s.nombre].qty += (s.cantidad || 1) * q;
   }
@@ -160,8 +171,13 @@ function calcBOM(muebles, catalog) {
     const catMatch = catalog.find(c => /tapacanto/i.test(c.label));
     items.push({ id: id++, cat: "Accesorios", desc: "Tapacantos ABS 2mm", qty: parseFloat((edging * WASTE).toFixed(1)), unit: "m", price: catMatch?.price || 0, detail: `${parseFloat(edging.toFixed(1))} m netos` });
   }
-  for (const [h, count] of Object.entries(hw))
-    items.push({ id: id++, cat: "Herrajes", desc: h, qty: count, unit: "u", price: 0, detail: "" });
+  for (const [h, data] of Object.entries(hw)) {
+    if (typeof data === "object" && data.qty !== undefined) {
+      if (data.qty > 0) items.push({ id: id++, cat: "Herrajes", desc: h, qty: parseFloat(data.qty.toFixed(1)), unit: data.unit || "u", price: 0, detail: "" });
+    } else {
+      items.push({ id: id++, cat: "Herrajes", desc: h, qty: data, unit: "u", price: 0, detail: "" });
+    }
+  }
   for (const [nombre, data] of Object.entries(especiales))
     items.push({ id: id++, cat: "Especiales", desc: nombre, qty: data.qty, unit: data.unidad, price: 0, detail: "" });
   return { items, has30 };
@@ -388,37 +404,51 @@ Analizá el/los plano(s) y extraé TODOS los muebles con sus componentes, materi
 Respondé ÚNICAMENTE con JSON válido. Sin backticks, sin texto adicional.
 
 REGLAS DE MATERIALES:
-- MDF 15mm: componentes INTERNOS (estantes, laterales interiores, pisos de cajones). EL MÁS USADO.
-- MDF 18mm: envolventes, frentes, puertas, laterales exteriores.
+- MDF 15mm: componentes INTERNOS (estantes, laterales interiores, pisos de cajones, fondos de cajón). EL MÁS USADO.
+- MDF 18mm: envolventes, frentes de cajón vistos, puertas, laterales exteriores.
 - MDF 6mm: fondos de muebles PREMIUM.
 - MDF 3mm: fondos de muebles ECONÓMICOS. NUNCA usar MDF 9mm.
 - MDF 30mm: regruesos (2 chapas de 15mm pegadas).
 - MDF Hidrofugo 15mm / 18mm: baños y ambientes húmedos.
 - Sin espesor especificado: 15mm internos, 18mm exteriores.
 
+PUERTAS — REGLA CRÍTICA:
+- Solo agregar bisagras y puertas si el plano MUESTRA CLARAMENTE puertas cerradas (líneas de puerta, símbolo de apertura).
+- Vestidores y estanterías ABIERTAS (sin líneas de puerta) → NO llevan puertas ni bisagras.
+- Paneles decorativos, fondos de madera vista, chapas de revestimiento → NO son puertas.
+
 MESADAS (solo en cocinas y baños con piedra):
 - Detectar: Granito, Mármol, Ultracompact (Dekton/Silestone/Neolith).
 - Calcular en m² (ancho × profundidad).
-- Paneles tapizados, cabeceras de cama, paneles decorativos NO son mesadas.
+- Paneles tapizados, cabeceras de cama, paneles decorativos, revestimientos → NUNCA son mesadas.
 
 HERRAJES — REGLAS IMPORTANTES:
-- Bisagras cazoleta: 2 por puerta pequeña, 4 por puerta alta (>1200mm).
-- Corredizas de cajón: SIEMPRE en PARES (1 par = 2 unidades) por cajón. Ej: 3 cajones = 3 pares.
+- Bisagras cazoleta: SOLO si hay puertas explícitas en el plano. 2 por puerta pequeña, 4 por puerta alta (>1200mm).
+- Corredizas de cajón: SIEMPRE en PARES (1 par) por cajón. Ej: 4 cajones = 4 pares de corredizas.
 - Pistones a gas: 2 unidades por puerta basculante/abatible hacia arriba.
-- Riel para puerta corrediza de espejo: solo RIEL SUPERIOR (sistema suspendido, sin guía inferior).
-- Perfilería de aluminio para puertas espejo: calcular en metros lineales.
-- Espejo: calcular en m² (no en chapas).
-- Tiradores/jaladores: 1 por puerta o cajón.
-- Cinta LED / Perfil LED: calcular en metros lineales.
+- Riel puerta corrediza de espejo: solo RIEL SUPERIOR suspendido, sin guía inferior.
+- Perfilería de aluminio para puertas espejo: metros lineales.
+- Espejo: en m², NO en chapas.
+- Tiradores/jaladores: 1 por puerta o cajón con frente visto.
+- Barra para ropa: en metros lineales según ancho del módulo.
+- Soportes de estante ajustable (pines/clavijas): 4 por estante ajustable.
+
+ILUMINACIÓN LED — REGLAS CRÍTICAS:
+- Cinta LED / Canaleta LED: SIEMPRE en METROS LINEALES (unidad: "m"). NUNCA en chapas ni m².
+- Si dice "LED en la parte superior": calcular el ancho total del mueble en metros.
+- Si dice "LED en los laterales": calcular 2 × alto del mueble en metros.
+- Si hay LED en varios lugares, SUMAR todo en UN SOLO ítem de metros lineales.
+- NO duplicar el LED — consolidar todas las menciones de LED en una única línea.
 
 ELEMENTOS ESPECIALES:
-- Ripado de madera: calcular metros lineales de listones + tablero de respaldo.
-- Cantos curvos / fresados: incluir como ítem de "Mecanizado especial" con descripción.
-- Panel tapizado / cabecera: incluir como ítem con m² de tapizado.
-- Sistema suspendido (puerta corrediza): solo riel superior, sin guía inferior.
+- Ripado de madera: metros lineales de listones + tablero de respaldo.
+- Cantos curvos / fresados: ítem "Mecanizado especial".
+- Panel tapizado / cabecera: m² de tapizado.
+- Sistema suspendido: solo riel superior.
 
 JSON requerido:
-{"proyecto":"descripción del proyecto","muebles":[{"nombre":"nombre del mueble","cantidad":1,"componentes":[{"descripcion":"Lateral","material":"MDF 15mm","ancho_mm":350,"alto_mm":720,"cantidad":2}],"mesada":{"material":"Granito Negro Absoluto","ancho_mm":900,"profundidad_mm":600,"cantidad":1},"herrajes":[{"nombre":"Bisagra cazoleta 35mm","cantidad":4},{"nombre":"Par de corredizas 500mm","cantidad":2}],"especiales":[{"nombre":"Mecanizado canto curvo","unidad":"u","cantidad":1}]}]}
+{"proyecto":"descripción del proyecto","muebles":[{"nombre":"nombre del mueble","cantidad":1,"componentes":[{"descripcion":"Lateral","material":"MDF 15mm","ancho_mm":350,"alto_mm":720,"cantidad":2}],"mesada":{"material":"Granito Negro Absoluto","ancho_mm":900,"profundidad_mm":600,"cantidad":1},"herrajes":[{"nombre":"Bisagra cazoleta 35mm","cantidad":4},{"nombre":"Par de corredizas 500mm","cantidad":4},{"nombre":"Canaleta LED 3000K","cantidad_ml":5.8}],"especiales":[{"nombre":"Mecanizado canto curvo","unidad":"u","cantidad":1}]}]}
+Para LED usar "cantidad_ml" (metros lineales) en lugar de "cantidad".
 Omití "mesada" si no hay. Omití "herrajes" si no hay. Omití "especiales" si no hay.`;
 
       const resp = await fetch("/api/analyze", {
